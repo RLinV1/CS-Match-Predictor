@@ -10,6 +10,7 @@ The data the model trains on is only past data. There's two implementations wher
 the other uses 15 features to predict and utilizes the past 10 games to determine the outcome.
 
 Results:
+<img width="2427" height="427" alt="image" src="https://github.com/user-attachments/assets/b871eedf-19c3-4d31-a34a-86e8a5626347" />
 
 
 
