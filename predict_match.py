@@ -164,13 +164,6 @@ predictions = backtest(full, rr, predictors)
 accuracy = accuracy_score(predictions["actual"], predictions["prediction"])
 print(f"Backtest Accuracy with previous 10 games: {accuracy:.4f}")
 
-import pandas as pd
-from sklearn.linear_model import RidgeClassifier
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.feature_selection import SequentialFeatureSelector
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import accuracy_score
-
 def shift_col(team, col_name):
     next_col = team[col_name].shift(-1)
     return next_col
