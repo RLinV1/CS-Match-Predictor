@@ -122,7 +122,6 @@ df = pd.concat([df, df_rolling], axis=1)
 df = df.dropna()
 
 
-
 # add data on the next team to face and the next date they'll face them
 df["team_next"] = add_col(df, "team") #just the first team
 df["team_opp_next"] = add_col(df, "team_opp")
@@ -132,12 +131,55 @@ df["date_next"] = add_col(df, "date")
 df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 df["date_next"] = pd.to_datetime(df["date_next"]).dt.normalize()
 
-# merge the values
-full = df.merge(df[rolling_cols + ["team_opp_next", "date_next", "team"]], left_on=["team", "date_next"], right_on=["team_opp_next", "date_next"])
+df_opponent = df.copy()
+
+df_opponent["team"], df_opponent["team_opp"] = df["team_opp"], df["team"]
+
+for col in ["avg_kills", "avg_assists", "avg_deaths", "avg_ADR", "avg_KAST", "avg_rating"]:
+    df_opponent[col], df_opponent[col + "_opp"] = df[col + "_opp"], df[col]
+
+df_expanded = pd.concat([df, df_opponent], ignore_index=True)
+
+# Sort by team and date again
+df_expanded = df_expanded.sort_values(["team", "date", "map"])
+
+df_expanded['game_number'] = df_expanded.groupby(["team", "date", "map"]).cumcount() + 1
+df_expanded["team_next"] = add_col(df_expanded, "team")
+df_expanded["team_opp_next"] = add_col(df_expanded, "team_opp")
+df_expanded["date_next"] = add_col(df_expanded, "date")
+df_expanded["map_next"] = add_col(df_expanded, "map")
+df_expanded["game_number_next"] = add_col(df_expanded, "game_number")
+
+# Create unique match_id for current and next matches
+df_expanded['match_id'] = (
+    df_expanded['team'] + '_' + 
+    df_expanded['team_opp'] + '_' + 
+    df_expanded['date'].astype(str) + '_' + 
+    df_expanded['map']
+)
+
+df_expanded['next_match_id'] = (
+    df_expanded['team_next'] + '_' + 
+    df_expanded['team_opp_next'] + '_' + 
+    df_expanded['date_next'].astype(str) + '_' + 
+    df_expanded['map_next']
+)
+
+full = df_expanded.merge(
+    df_expanded[rolling_cols + ["match_id"]],
+    left_on="next_match_id",
+    right_on="match_id",
+    suffixes=('', '_next')  
+)
+
+full = full.drop(columns=['match_id_next'])# Merge with the correct keys
+
+# some data is merged incorrectly unkowned why
+full = full[full["date_next"] > full["date"]]
+
 
 datetime_cols = full.select_dtypes(include=["datetime64"]).columns.tolist()
 
-# Combine with your removed columns. We do not want any datetime objects in there 
 removed_cols_merge = list(full.columns[full.dtypes == "object"]) + [
     "tournament", "map", "date", "date_next",
     "team", "team_next", "team_opp", "team_opp_next", "target"
@@ -145,13 +187,14 @@ removed_cols_merge = list(full.columns[full.dtypes == "object"]) + [
 
 # filter the columns
 selected_columns = full.columns[~full.columns.isin(removed_cols_merge)]
+
+
 if full.empty:
     print("Merge failed: no matching rows in full DataFrame")
     exit()
 
 print()
-
-sfs = SequentialFeatureSelector(rr, n_features_to_select=15, direction="forward", cv=split)
+sfs = SequentialFeatureSelector(rr, n_features_to_select=12, direction="forward", cv=split)
 
 print("Selected Features: ", list(selected_columns))
 sfs.fit(full[selected_columns], full["target"])
@@ -163,3 +206,5 @@ print("Selected predictors:", predictors)
 predictions = backtest(full, rr, predictors)
 accuracy = accuracy_score(predictions["actual"], predictions["prediction"])
 print(f"Backtest Accuracy with previous 10 games: {accuracy:.4f}")
+
+
