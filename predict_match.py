@@ -6,11 +6,14 @@ from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import accuracy_score
 
 def shift_col(team, col_name):
+    team = team.sort_values("date")
     next_col = team[col_name].shift(-1)
     return next_col
 
-def add_col(df, col_name):
-    return df.groupby("team", group_keys=False)[df.columns.tolist()].apply(lambda x: shift_col(x, col_name))
+def add_col(df, col_name):  
+    df = df.sort_values(["team", "date"])
+    # Shift the OPPONENT column for next match
+    return df.groupby("team")[col_name].shift(-1)
 
 # test based on previous data to predict future data
 def backtest(data, model, predictors, start=2, step=1):
@@ -57,6 +60,8 @@ df["date"] = pd.to_datetime(df["date"])
 # Sort by team and date to ensure chronological order within teams
 df = df.sort_values(["team", "date"])
 
+
+df["map_win_rate"] = df.groupby(["team", "map"])["won"].transform("mean")
 
 # convert percentages to floats
 df['avg_KAST'] = df['avg_KAST'].str.replace('%', '').astype(float) / 100
@@ -109,7 +114,6 @@ accuracy = accuracy_score(predictions["actual"], predictions["prediction"])
 
 print(f"Backtest Accuracy: {accuracy:.4f}")
 
-
 # Test data on last 10 games
 df_rolling = df[list(selected_columns) + ["won", "team", "date"]]
 
@@ -117,65 +121,60 @@ df_rolling = df_rolling.groupby(["team", "date"], group_keys=False)[df_rolling.c
 rolling_cols = [f"{col}_10" for col in df_rolling.columns]
 df_rolling.columns = rolling_cols
 
-# combine the two dataframes
-df = pd.concat([df, df_rolling], axis=1)
-df = df.dropna()
+# 1. Combine dataframes and clean
+df = pd.concat([df, df_rolling], axis=1).dropna()
 
-
-# add data on the next team to face and the next date they'll face them
-df["team_next"] = add_col(df, "team") #just the first team
-df["team_opp_next"] = add_col(df, "team_opp")
-df["date_next"] = add_col(df, "date")
-
-# no timestamps just dates
 df["date"] = pd.to_datetime(df["date"]).dt.normalize()
-df["date_next"] = pd.to_datetime(df["date_next"]).dt.normalize()
 
-df_opponent = df.copy()
+# 3. Sort properly (critical!)
+df = df.sort_values(['team', 'date', 'map']).reset_index(drop=True)
 
-df_opponent["team"], df_opponent["team_opp"] = df["team_opp"], df["team"]
+df["team_next"] = add_col(df, "team_opp")
+df["date_next"] =  add_col(df, "date")
+df["map_next"] = add_col(df, "map")
 
-for col in ["avg_kills", "avg_assists", "avg_deaths", "avg_ADR", "avg_KAST", "avg_rating"]:
-    df_opponent[col], df_opponent[col + "_opp"] = df[col + "_opp"], df[col]
+# 5. Create match IDs using index
+df['match_id'] = df.index
+df['next_match_id'] = df.index + 1  # Next row is next match
 
-df_expanded = pd.concat([df, df_opponent], ignore_index=True)
+# 6. Handle edge cases  make them NA
+last_matches = df.groupby('team').tail(1).index
+df.loc[last_matches, 'next_match_id'] = pd.NA
 
-# Sort by team and date again
-df_expanded = df_expanded.sort_values(["team", "date", "map"])
-
-df_expanded['game_number'] = df_expanded.groupby(["team", "date", "map"]).cumcount() + 1
-df_expanded["team_next"] = add_col(df_expanded, "team")
-df_expanded["team_opp_next"] = add_col(df_expanded, "team_opp")
-df_expanded["date_next"] = add_col(df_expanded, "date")
-df_expanded["map_next"] = add_col(df_expanded, "map")
-df_expanded["game_number_next"] = add_col(df_expanded, "game_number")
-
-# Create unique match_id for current and next matches
-df_expanded['match_id'] = (
-    df_expanded['team'] + '_' + 
-    df_expanded['team_opp'] + '_' + 
-    df_expanded['date'].astype(str) + '_' + 
-    df_expanded['map']
+right_df = df[rolling_cols + ['match_id']].copy()
+full = df.merge(
+    right_df,
+    left_on='next_match_id',
+    right_on='match_id',
+    how='left',
+    suffixes=('', '_next')
 )
 
-df_expanded['next_match_id'] = (
-    df_expanded['team_next'] + '_' + 
-    df_expanded['team_opp_next'] + '_' + 
-    df_expanded['date_next'].astype(str) + '_' + 
-    df_expanded['map_next']
-)
 
-full = df_expanded.merge(
-    df_expanded[rolling_cols + ["match_id"]],
-    left_on="next_match_id",
-    right_on="match_id",
-    suffixes=('', '_next')  
-)
+print("\n=== Check Dates ===")
+wrong_dates = full[full["date_next"] < full["date"]]
+print(f"Found {len(wrong_dates)} problematic rows where date_next < date")
+if len(wrong_dates) > 0:
+    print(wrong_dates[["team", "team_next", "date", "date_next"]])
 
-full = full.drop(columns=['match_id_next'])# Merge with the correct keys
+print("\n=== Merge Results ===")
+print(f"Total rows: {len(df)}")
+print(f"Successful merges: {full['match_id_next'].notna().sum()}")
+print(f"Failed merges: {full['match_id_next'].isna().sum()}")
+# if full['match_id_next'].isna().sum() > 0:
+    # print("\nSample failed matches:")
+    # print(full[full['match_id_next'].isna()][['team', 'date', 'team_next', 'date_next']].head())
+    
+full_clean = full.dropna(subset=['next_match_id'])
 
-# some data is merged incorrectly unkowned why
-full = full[full["date_next"] > full["date"]]
+print(f"Removed {len(full) - len(full_clean)} rows with missing next matches")
+print(f"Final dataset has {len(full_clean)} rows")
+
+# Add a flag column instead of removing
+full['has_next_match'] = full['next_match_id'].notna()
+
+# You can then filter later if needed
+full = full[full['has_next_match']]
 
 
 datetime_cols = full.select_dtypes(include=["datetime64"]).columns.tolist()
@@ -187,7 +186,6 @@ removed_cols_merge = list(full.columns[full.dtypes == "object"]) + [
 
 # filter the columns
 selected_columns = full.columns[~full.columns.isin(removed_cols_merge)]
-
 
 if full.empty:
     print("Merge failed: no matching rows in full DataFrame")
@@ -203,8 +201,10 @@ sfs.fit(full[selected_columns], full["target"])
 predictors = list(selected_columns[sfs.get_support()])  # Then get selected features
 print("Selected predictors:", predictors)
 
+# print(full)
 predictions = backtest(full, rr, predictors)
 accuracy = accuracy_score(predictions["actual"], predictions["prediction"])
 print(f"Backtest Accuracy with previous 10 games: {accuracy:.4f}")
 
-
+# print(full[['team', 'team_opp', 'date', 'map', 'match_id', 
+#            'team_next', 'date_next', 'map_next', 'next_match_id']].head(10).to_string())
